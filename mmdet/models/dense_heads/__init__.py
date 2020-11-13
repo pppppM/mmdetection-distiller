@@ -24,6 +24,7 @@ from .ssd_head import SSDHead
 from .vfnet_head import VFNetHead
 from .yolact_head import YOLACTHead, YOLACTProtonet, YOLACTSegmHead
 from .yolo_head import YOLOV3Head
+from .yolov5_head import YOLOV5Head
 
 __all__ = [
     'AnchorFreeHead', 'AnchorHead', 'GuidedAnchorHead', 'FeatureAdaption',
@@ -32,5 +33,5 @@ __all__ = [
     'FreeAnchorRetinaHead', 'ATSSHead', 'FSAFHead', 'NASFCOSHead',
     'PISARetinaHead', 'PISASSDHead', 'GFLHead', 'CornerHead', 'YOLACTHead',
     'YOLACTSegmHead', 'YOLACTProtonet', 'YOLOV3Head', 'PAAHead',
-    'SABLRetinaHead', 'CentripetalHead', 'VFNetHead'
+    'SABLRetinaHead', 'CentripetalHead', 'VFNetHead','YOLOV5Head'
 ]

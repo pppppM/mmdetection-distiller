@@ -16,30 +16,27 @@ model = dict(
         type='YOLOV5Head',
         num_classes=80,
         in_channels=[512, 256, 128],
+        conf_smooth=1.0,
         anchor_generator=dict(
             type='YOLOAnchorGenerator',
             base_sizes=[[(116, 90), (156, 198), (373, 326)],
                         [(30, 61), (62, 45), (59, 119)],
                         [(10, 13), (16, 30), (33, 23)]],
             strides=[32, 16, 8]),
-        bbox_coder=dict(type='YOLOBBoxCoder'),
+        bbox_coder=dict(type='YOLOV5BBoxCoder'),
         featmap_strides=[32, 16, 8],
         loss_cls=dict(
             type='CrossEntropyLoss',
             use_sigmoid=True,
-            loss_weight=1.0,
-            reduction='sum'),
+            loss_weight=0.5,
+            reduction='mean'),
         loss_conf=dict(
             type='CrossEntropyLoss',
             use_sigmoid=True,
             loss_weight=1.0,
-            reduction='sum'),
-        loss_xy=dict(
-            type='CrossEntropyLoss',
-            use_sigmoid=True,
-            loss_weight=2.0,
-            reduction='sum'),
-        loss_wh=dict(type='MSELoss', loss_weight=2.0, reduction='sum')))
+            reduction='mean'),
+        loss_bbox=dict(type='CIoULoss', loss_weight=0.05,),
+        ))
 # training and testing settings
 train_cfg = dict(
     assigner=dict(
@@ -91,8 +88,8 @@ test_pipeline = [
         ])
 ]
 data = dict(
-    samples_per_gpu=16,
-    workers_per_gpu=8,
+    samples_per_gpu=64,
+    workers_per_gpu=4,
     train=dict(
         type=dataset_type,
         ann_file=data_root + 'annotations/instances_train2017.json',
@@ -109,15 +106,21 @@ data = dict(
         img_prefix=data_root + 'val2017/',
         pipeline=test_pipeline))
 # optimizer
-optimizer = dict(type='SGD', lr=0.01, momentum=0.9, weight_decay=0.0005)
+optimizer = dict(type='SGD', lr=0.2, momentum=0.937,nesterov=True, weight_decay=0.0005)
+lr_config = dict(
+    policy='CosineAnnealing',
+    min_lr=0.01,
+    by_epoch=True,
+    warmup='linear',
+    warmup_iters=1000,  # same as burn-in in darknet
+    warmup_ratio=0.1,
+    )
 optimizer_config = dict(grad_clip=dict(max_norm=35, norm_type=2))
 # learning policy
-lr_config = dict(
-    policy='step',
-    warmup='linear',
-    warmup_iters=2000,  # same as burn-in in darknet
-    warmup_ratio=0.1,
-    step=[218, 246])
+# lr_config = dict(
+#     policy='step',
+    
+#     step=[218, 246])
 # runtime settings
-total_epochs = 273
+total_epochs = 300
 evaluation = dict(interval=1, metric=['bbox'])

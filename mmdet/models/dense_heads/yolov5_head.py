@@ -1,7 +1,7 @@
 # Copyright (c) 2019 Western Digital Corporation or its affiliates.
 
 import warnings
-
+import math
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -55,6 +55,7 @@ class YOLOV5Head(BaseDenseHead, BBoxTestMixin):
                      strides=[32, 16, 8]),
                  bbox_coder=dict(type='YOLOBBoxCoder'),
                  featmap_strides=[32, 16, 8],
+                 conf_smooth=0.1,
                  one_hot_smoother=0.,
                  conv_cfg=None,
                  norm_cfg=dict(type='BN', requires_grad=True),
@@ -67,11 +68,9 @@ class YOLOV5Head(BaseDenseHead, BBoxTestMixin):
                      type='CrossEntropyLoss',
                      use_sigmoid=True,
                      loss_weight=1.0),
-                 loss_xy=dict(
-                     type='CrossEntropyLoss',
-                     use_sigmoid=True,
+                 loss_bbox=dict(
+                     type='CIoULoss',
                      loss_weight=1.0),
-                 loss_wh=dict(type='MSELoss', loss_weight=1.0),
                  train_cfg=None,
                  test_cfg=None):
         super(YOLOV5Head, self).__init__()
@@ -92,7 +91,7 @@ class YOLOV5Head(BaseDenseHead, BBoxTestMixin):
             self.sampler = build_sampler(sampler_cfg, context=self)
 
         self.one_hot_smoother = one_hot_smoother
-
+        self.conf_smooth = conf_smooth
         self.conv_cfg = conv_cfg
         self.norm_cfg = norm_cfg
         self.act_cfg = act_cfg
@@ -102,8 +101,8 @@ class YOLOV5Head(BaseDenseHead, BBoxTestMixin):
 
         self.loss_cls = build_loss(loss_cls)
         self.loss_conf = build_loss(loss_conf)
-        self.loss_xy = build_loss(loss_xy)
-        self.loss_wh = build_loss(loss_wh)
+        self.loss_bbox = build_loss(loss_bbox)
+        # self.loss_wh = build_loss(loss_wh)
         # usually the numbers of anchors for each level are the same
         # except SSD detectors
         self.num_anchors = self.anchor_generator.num_base_anchors[0]
@@ -129,7 +128,11 @@ class YOLOV5Head(BaseDenseHead, BBoxTestMixin):
             
             conv_pred = nn.Conv2d(self.in_channels[i],
                                   self.num_anchors * self.num_attrib, 1)
-
+            bias = conv_pred.bias.view(self.num_anchors, -1)
+            stride = conv_pred.stride[0]
+            bias[:, 4] += math.log(8 / (608 / stride) ** 2)
+            bias[:, 5:] += math.log(0.6 / (self.num_classes - 0.99))
+            conv_pred.bias =torch.nn.Parameter(bias.view(-1), requires_grad=True)
             self.convs_pred.append(conv_pred)
 
     def init_weights(self):
@@ -246,7 +249,7 @@ class YOLOV5Head(BaseDenseHead, BBoxTestMixin):
             # (h, w, num_anchors*num_attrib) -> (h*w*num_anchors, num_attrib)
             pred_map = pred_map.permute(1, 2, 0).reshape(-1, self.num_attrib)
 
-            pred_map[..., :2] = torch.sigmoid(pred_map[..., :2])
+            # pred_map[..., :2] = torch.sigmoid(pred_map[..., :2])
             bbox_pred = self.bbox_coder.decode(multi_lvl_anchors[i],
                                                pred_map[..., :4], stride)
             # conf and cls
@@ -335,28 +338,22 @@ class YOLOV5Head(BaseDenseHead, BBoxTestMixin):
         ]
         multi_level_anchors = self.anchor_generator.grid_anchors(
             featmap_sizes, device)
-        anchor_list = [multi_level_anchors for _ in range(num_imgs)]
-        # import pdb;pdb.set_trace()
-        responsible_flag_list = []
-        for img_id in range(len(img_metas)):
-            responsible_flag_list.append(
-                self.anchor_generator.responsible_flags(
-                    featmap_sizes, gt_bboxes[img_id], device))
+        anchor_list = [anchors_lvl.repeat(num_imgs,1) for anchors_lvl in multi_level_anchors]
 
-        target_maps_list, neg_maps_list = self.get_targets(
+        target_maps_list, pos_inds_list = self.get_targets(
            featmap_sizes, gt_bboxes, gt_labels)
-        import pdb; pdb.set_trace()
 
-        losses_cls, losses_conf, losses_xy, losses_wh = multi_apply(
-            self.loss_single, pred_maps, target_maps_list, neg_maps_list)
+        losses_cls, losses_conf, losses_bbox = multi_apply(
+            self.loss_single, pred_maps, anchor_list,
+            target_maps_list, pos_inds_list,self.featmap_strides,
+            [gt_bboxes for _ in target_maps_list])
 
         return dict(
-            loss_cls=losses_cls,
+            loss_cls=losses_cls ,
             loss_conf=losses_conf,
-            loss_xy=losses_xy,
-            loss_wh=losses_wh)
+            loss_bbox=losses_bbox)
 
-    def loss_single(self, pred_map, target_map, neg_map):
+    def loss_single(self, pred_map,anchors_lvl, target_map, pos_inds,stride,gt):
         """Compute loss of a single image from a batch.
 
         Args:
@@ -373,33 +370,36 @@ class YOLOV5Head(BaseDenseHead, BBoxTestMixin):
         """
 
         num_imgs = len(pred_map)
+        # import pdb; pdb.set_trace()
         pred_map = pred_map.permute(0, 2, 3,
-                                    1).reshape(num_imgs, -1, self.num_attrib)
-        neg_mask = neg_map.float()
-        pos_mask = target_map[..., 4]
-        pos_and_neg_mask = neg_mask + pos_mask
-        pos_mask = pos_mask.unsqueeze(dim=-1)
-        if torch.max(pos_and_neg_mask) > 1.:
-            warnings.warn('There is overlap between pos and neg sample.')
-            pos_and_neg_mask = pos_and_neg_mask.clamp(min=0., max=1.)
+                                    1).reshape( -1, self.num_attrib)
+        
+        pred_bboxes = self.bbox_coder.decode(anchors_lvl[pos_inds],pred_map[pos_inds,:4],stride)
 
-        pred_xy = pred_map[..., :2]
-        pred_wh = pred_map[..., 2:4]
         pred_conf = pred_map[..., 4]
-        pred_label = pred_map[..., 5:]
+        pred_label = pred_map[pos_inds, 5:]
 
-        target_xy = target_map[..., :2]
-        target_wh = target_map[..., 2:4]
-        target_conf = target_map[..., 4]
-        target_label = target_map[..., 5:]
 
-        loss_cls = self.loss_cls(pred_label, target_label, weight=pos_mask)
+        target_bboxes = self.bbox_coder.decode_target(anchors_lvl[pos_inds],target_map[:,2:6],stride)
+
+        target_label = target_map[..., 6].long()
+        loss_bbox = self.loss_bbox(pred_bboxes,target_bboxes,reduction_override='none')
+        target_pos_conf = (1 - self.conf_smooth) + self.conf_smooth * (1 - loss_bbox.detach()).clamp(0)
+        
+        
+        neg_inds = torch.ones_like(pred_conf).scatter_(0,pos_inds,0).bool()
+        target_neg_conf = torch.zeros_like(pred_conf[neg_inds])
+        pred_conf = torch.cat((pred_conf[pos_inds],pred_conf[neg_inds]),dim=0)
+        target_conf = torch.cat((target_pos_conf,target_neg_conf),dim=0)
+
+        
+        loss_bbox = loss_bbox.mean() * num_imgs
+        loss_cls = self.loss_cls(pred_label, target_label) * num_imgs
         loss_conf = self.loss_conf(
-            pred_conf, target_conf, weight=pos_and_neg_mask)
-        loss_xy = self.loss_xy(pred_xy, target_xy, weight=pos_mask)
-        loss_wh = self.loss_wh(pred_wh, target_wh, weight=pos_mask)
+            pred_conf, target_conf) * num_imgs
 
-        return loss_cls, loss_conf, loss_xy, loss_wh
+
+        return loss_cls, loss_conf, loss_bbox
 
     def get_targets(self, featmap_sizes, gt_bboxes_list,
                     gt_labels_list):
@@ -433,27 +433,30 @@ class YOLOV5Head(BaseDenseHead, BBoxTestMixin):
         
         all_target, _ = results
         target_lvl_list = []
+        target_inds_lvl_list = []
         for lvl in range(len(featmap_sizes)):
             target_lvl = []
+            target_inds_lvl = []
+            feat_h, feat_w = featmap_sizes[lvl]
             for i in range(num_imgs):
                 per_img_target = all_target[i]
                 per_img_target_lvl = per_img_target[lvl]
-                # import pdb;pdb.set_trace()
-                per_img_target_lvl = torch.cat([per_img_target_lvl,
-                                                torch.ones_like(per_img_target_lvl[:,-1:]) * i],dim=1)
+                grid_i,grid_j = per_img_target_lvl[:,0],per_img_target_lvl[:,1]
+                anchor_index = per_img_target_lvl[:,-1]
                 target_lvl.append(per_img_target_lvl)
+                # import pdb; pdb.set_trace()
+                target_inds_lvl.append(i * feat_h * feat_w * 3 \
+                                        + grid_j * feat_w *3  \
+                                        + grid_i * 3 + anchor_index)
             # import pdb; pdb.set_trace()
             target_lvl = torch.cat(target_lvl)
-            target_lvl_list.append(target_lvl)
+            target_inds_lvl = torch.cat(target_inds_lvl)
             
+            target_lvl_list.append(target_lvl)
+            target_inds_lvl_list.append(target_inds_lvl.long())
 
-                
 
-        # assert num_imgs == len(all_target_maps) == len(all_neg_maps)
-        # target_maps_list = images_to_levels(all_target_maps, num_level_anchors)
-        # neg_maps_list = images_to_levels(all_neg_maps, num_level_anchors)
-
-        return target_lvl_list, target_lvl_list
+        return target_lvl_list, target_inds_lvl_list
 
     def _get_targets_single(self, featmap_size,gt_bboxes,
                             gt_labels):
@@ -500,6 +503,8 @@ class YOLOV5Head(BaseDenseHead, BBoxTestMixin):
 
                 pos_grids = anchor_gt_pair[pos_inds]
 
+                pos_grids[:,:4] = pos_grids[:,:4]/stride
+
                 pos_grids_cx = ((pos_grids[:, 0] + pos_grids[:, 2]) * 0.5)
                 pos_grids_cy = ((pos_grids[:, 1] + pos_grids[:, 3]) * 0.5)
 
@@ -511,18 +516,24 @@ class YOLOV5Head(BaseDenseHead, BBoxTestMixin):
                 nearest_inds = torch.stack((torch.ones_like(right),right,bottom,left,top))
                 nearest_grids = pos_grids.repeat(5,1,1)[nearest_inds]
                 nearest_offsets =  off.unsqueeze(1).repeat(1,len(pos_grids),1)[nearest_inds]
+                nearest_offsets_x = nearest_offsets[:,0]
+                nearest_offsets_y = nearest_offsets[:,1]
             else:
 
                 nearest_grids = anchor_gt_pair[0]
                 nearest_offsets = 0
-            # import pdb;pdb.set_trace()
-
+                nearest_offsets_x = 0
+                nearest_offsets_y = 0
+            
+            
             nearest_grids_cx = ((nearest_grids[:, 0] + nearest_grids[:, 2]) * 0.5)
             nearest_grids_cy = ((nearest_grids[:, 1] + nearest_grids[:, 3]) * 0.5)
-
-            grid_cx = (nearest_grids_cx - nearest_offsets[:,0])
-            grid_cy = (nearest_grids_cy - nearest_offsets[:,1])
-
+            try:
+                grid_cx = (nearest_grids_cx + nearest_offsets_x)
+                grid_cy = (nearest_grids_cy + nearest_offsets_y)
+            except:
+                import pdb; pdb.set_trace()
+            # import pdb;pdb.set_trace()
             grid_i = grid_cx.long().clamp(0 , feat_w-1)
             grid_j = grid_cy.long().clamp(0 , feat_h-1)
             grid_offset_x = nearest_grids_cx - grid_i
@@ -531,11 +542,11 @@ class YOLOV5Head(BaseDenseHead, BBoxTestMixin):
             grid_cls = nearest_grids[:,4]
             grid_anchor_index = nearest_grids[:,5]
 
-            target_lvl = torch.stack((grid_j,grid_i,
+            target_lvl = torch.stack((grid_i,grid_j,
                                       grid_offset_x,grid_offset_y,
                                       grid_w,grid_h,
                                       grid_cls,grid_anchor_index),dim=1)
-
+            # import pdb; pdb.set_trace()
             target_lvl_list.append(target_lvl)
 
         return target_lvl_list,target_lvl_list

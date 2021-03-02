@@ -6,7 +6,7 @@ This project is based on mmdetection(v-2.9.0), all the usage is the same as [mmd
 
 
 
-- [x] [Channel-wise Distillation for Semantic Segmentation](https://github.com/pppppM/mmdetection/tree/master/configs/distillers/cwd)
+- [x] [Channel-wise Distillation for Semantic Segmentation](https://github.com/pppppM/mmdetection-distiller/tree/master/configs/distillers/cwd)
 - [ ] [Improve Object Detection with Feature-based Knowledge Distillation: Towards Accurate and Efficient Detectors](https://openreview.net/forum?id=uKhGRvM8QNH)
 
 

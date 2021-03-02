@@ -15,6 +15,7 @@ from mmdet import __version__
 from mmdet.apis import set_random_seed, train_detector
 from mmdet.datasets import build_dataset
 from mmdet.models import build_detector
+from mmdet.distillation import build_distiller
 from mmdet.utils import collect_env, get_root_logger
 
 
@@ -155,10 +156,21 @@ def main():
     meta['seed'] = args.seed
     meta['exp_name'] = osp.basename(args.config)
 
-    model = build_detector(
-        cfg.model,
-        train_cfg=cfg.get('train_cfg'),
-        test_cfg=cfg.get('test_cfg'))
+
+    distiller_cfg = cfg.get('distiller',None)
+    if distiller_cfg is None:
+        model = build_detector(
+            cfg.model,
+            train_cfg=cfg.get('train_cfg'),
+            test_cfg=cfg.get('test_cfg'))
+    else:
+        teacher_cfg = Config.fromfile(cfg.teacher_cfg)
+        student_cfg = Config.fromfile(cfg.student_cfg)
+        
+        model = build_distiller(cfg.distiller,teacher_cfg,student_cfg,
+         train_cfg=student_cfg.get('train_cfg'), 
+         test_cfg=student_cfg.get('test_cfg'))
+
 
     datasets = [build_dataset(cfg.data.train)]
     if len(cfg.workflow) == 2:

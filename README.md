@@ -1,4 +1,7 @@
 # mmdetection-distiller
+### The repo will be deprecated !!!!!
+### If you want to distill model in OpenMMLab related repos, could join the wechat group!!
+<img src="https://github.com/pppppM/mmsegmentation-distiller/blob/master/WechatIMG39.jpeg" width="150" height="200" ><br/>
 
 This project is based on mmdetection(v-2.9.0), all the usage is the same as [mmdetection](https://mmdetection.readthedocs.io/en/latest/) including training , test and so on.
 

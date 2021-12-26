@@ -1,7 +1,6 @@
-# mmdetection-distiller
-### The repo will be deprecated !!!!!
-### If you want to distill model in OpenMMLab related repos, could join the wechat group!!
-<img src="https://github.com/pppppM/mmsegmentation-distiller/blob/master/WechatIMG42.jpeg" width="150" height="200" ><br/>
+### If you want to distill model in OpenMMLab related repos, please use [MMRazor](https://github.com/open-mmlab/mmrazor)!!
+### If you are intrested in KD，you also could contact me by Wechat, and I will invite you to the KD group.
+<img src="https://github.com/pppppM/mmsegmentation-distiller/blob/master/QR.jpeg" width="150" height="200" ><br/>
 
 This project is based on mmdetection(v-2.9.0), all the usage is the same as [mmdetection](https://mmdetection.readthedocs.io/en/latest/) including training , test and so on.
 
